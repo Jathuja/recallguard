@@ -1,0 +1,102 @@
+[
+  {
+    "id": "case-01-stale-api-version",
+    "title": "Stale API Versioning",
+    "category": "stale_memory",
+    "description": "An autonomous devops agent remembers that Python 3.9 is the active runtime from a 2023 session, ignoring that it reached end-of-life and was superseded by Python 3.12.",
+    "severity": "high",
+    "stored_claims": [
+      {
+        "subject": "production_environment",
+        "predicate": "python_version",
+        "object_value": "3.9",
+        "valid_from": "2023-01-15T00:00:00Z",
+        "valid_until": "2024-10-01T00:00:00Z",
+        "confidence": 0.95
+      }
+    ],
+    "incoming_interaction": "Please configure our new CI workflow for the current production environment.",
+    "risk_analysis": "Without temporal filtering, the agent provisions deprecated Python 3.9 containers, breaking modern dependency builds."
+  },
+  {
+    "id": "case-02-contradictory-preferences",
+    "title": "Contradictory Database Preferences",
+    "category": "contradictory_memory",
+    "description": "Two distinct sessions record conflicting architectural mandates: Session A mandated PostgreSQL, while Session B switched the company policy to SQLite.",
+    "severity": "critical",
+    "stored_claims": [
+      {
+        "subject": "backend_stack",
+        "predicate": "primary_database",
+        "object_value": "PostgreSQL 15",
+        "valid_from": "2025-02-10T00:00:00Z",
+        "valid_until": null,
+        "confidence": 0.98
+      },
+      {
+        "subject": "backend_stack",
+        "predicate": "primary_database",
+        "object_value": "SQLite 3",
+        "valid_from": "2026-06-01T00:00:00Z",
+        "valid_until": null,
+        "confidence": 0.99
+      }
+    ],
+    "incoming_interaction": "Write the database initialization script for our new microservice.",
+    "risk_analysis": "The agent hallucinates a hybrid Postgres/SQLite implementation or randomly picks the older Postgres schema due to lack of temporal reconciliation."
+  },
+  {
+    "id": "case-03-temporal-deadline-shift",
+    "title": "Postponed Product Deadline",
+    "category": "temporal_shift",
+    "description": "Initial project kickoff recorded a release date of July 2026. A subsequent executive memo postponed launch to November 2026.",
+    "severity": "medium",
+    "stored_claims": [
+      {
+        "subject": "project_apollo",
+        "predicate": "launch_date",
+        "object_value": "2026-07-01",
+        "valid_from": "2026-01-10T00:00:00Z",
+        "valid_until": "2026-05-15T00:00:00Z",
+        "confidence": 0.90
+      },
+      {
+        "subject": "project_apollo",
+        "predicate": "launch_date",
+        "object_value": "2026-11-15",
+        "valid_from": "2026-05-15T00:00:00Z",
+        "valid_until": null,
+        "confidence": 0.95
+      }
+    ],
+    "incoming_interaction": "When is Project Apollo shipping, and how many sprints remain?",
+    "risk_analysis": "Without temporal boundary checks, the agent reports a deadline that has already expired or computes incorrect sprint velocity."
+  },
+  {
+    "id": "case-04-revoked-auth-credential",
+    "title": "Revoked Security Auth Scheme",
+    "category": "security_conflict",
+    "description": "A legacy token-based authentication mechanism was completely revoked in favor of mTLS OAuth.",
+    "severity": "critical",
+    "stored_claims": [
+      {
+        "subject": "internal_api",
+        "predicate": "auth_method",
+        "object_value": "static_api_token",
+        "valid_from": "2024-01-01T00:00:00Z",
+        "valid_until": "2026-03-01T00:00:00Z",
+        "confidence": 0.92
+      },
+      {
+        "subject": "internal_api",
+        "predicate": "auth_method",
+        "object_value": "mTLS_oauth",
+        "valid_from": "2026-03-01T00:00:00Z",
+        "valid_until": null,
+        "confidence": 0.99
+      }
+    ],
+    "incoming_interaction": "Generate the client code to query the internal payments endpoint.",
+    "risk_analysis": "The agent leaks or attempts to use revoked static tokens, causing authentication failures and potential audit violations."
+  }
+]
