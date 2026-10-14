@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS memory_claims (
     predicate TEXT NOT NULL,
     object_value TEXT NOT NULL,
     confidence REAL NOT NULL DEFAULT 1.0,
+    source_quote TEXT,
     source_session_id TEXT,
     valid_from TEXT,
     valid_until TEXT,
@@ -73,13 +74,20 @@ class DatabaseManager:
             conn.close()
 
     def init_db(self) -> None:
-        """Safely and repeatably initialize the database schema."""
+        """Safely and repeatably initialize the database schema and handle safe migrations."""
         if not self._is_memory:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.executescript(SCHEMA_SQL)
+
+            # Safe migration: ensure source_quote column exists on existing databases
+            cursor.execute("PRAGMA table_info(memory_claims)")
+            columns = [row["name"] for row in cursor.fetchall()]
+            if "source_quote" not in columns:
+                cursor.execute("ALTER TABLE memory_claims ADD COLUMN source_quote TEXT")
+
             # Record initial schema version if not present
             cursor.execute("SELECT COUNT(*) FROM schema_version WHERE version = 1")
             if cursor.fetchone()[0] == 0:
@@ -107,9 +115,9 @@ class DatabaseManager:
                 """
                 INSERT OR REPLACE INTO memory_claims (
                     id, subject, predicate, object_value, confidence,
-                    source_session_id, valid_from, valid_until, created_at,
+                    source_quote, source_session_id, valid_from, valid_until, created_at,
                     is_active, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     claim.id,
@@ -117,6 +125,7 @@ class DatabaseManager:
                     claim.predicate,
                     claim.object_value,
                     claim.confidence,
+                    claim.source_quote,
                     claim.source_session_id,
                     claim.valid_from.isoformat() if claim.valid_from else None,
                     claim.valid_until.isoformat() if claim.valid_until else None,
@@ -171,17 +180,27 @@ class DatabaseManager:
 
     @staticmethod
     def _row_to_claim(row: sqlite3.Row) -> MemoryClaim:
-        """Convert a SQLite row to a MemoryClaim model."""
+        """Convert a SQLite row to a MemoryClaim model with backward compatibility."""
+        row_keys = row.keys()
+        metadata_dict = json.loads(row["metadata"] or "{}")
+
+        source_quote = None
+        if "source_quote" in row_keys:
+            source_quote = row["source_quote"]
+        if not source_quote and "source_quote" in metadata_dict:
+            source_quote = metadata_dict["source_quote"]
+
         return MemoryClaim(
             id=row["id"],
             subject=row["subject"],
             predicate=row["predicate"],
             object_value=row["object_value"],
             confidence=row["confidence"],
+            source_quote=source_quote,
             source_session_id=row["source_session_id"],
             valid_from=row["valid_from"],
             valid_until=row["valid_until"],
             created_at=row["created_at"],
             is_active=bool(row["is_active"]),
-            metadata=json.loads(row["metadata"] or "{}"),
+            metadata=metadata_dict,
         )

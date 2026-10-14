@@ -137,3 +137,52 @@ def test_file_based_db_persistence(temp_file_db):
     loaded = db2.get_claim(claim.id)
     assert loaded is not None
     assert loaded.object_value == "disk"
+
+
+def test_source_quote_persistence(memory_db):
+    """Verify source_quote column stores and retrieves verbatim quote."""
+    claim = MemoryClaim(
+        subject="database",
+        predicate="engine",
+        object_value="SQLite",
+        source_quote="We use SQLite for local persistence.",
+    )
+    memory_db.insert_claim(claim)
+    loaded = memory_db.get_claim(claim.id)
+    assert loaded is not None
+    assert loaded.source_quote == "We use SQLite for local persistence."
+
+
+def test_migration_adds_source_quote():
+    """Verify safe migration when table was created without source_quote column."""
+    import sqlite3
+    db = DatabaseManager(":memory:")
+    # Manually create legacy table without source_quote
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE memory_claims (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                object_value TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                source_session_id TEXT,
+                valid_from TEXT,
+                valid_until TEXT,
+                created_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                metadata TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+    # Running init_db should migrate the table safely
+    db.init_db()
+
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(memory_claims)")
+        cols = [r["name"] for r in cursor.fetchall()]
+        assert "source_quote" in cols
+

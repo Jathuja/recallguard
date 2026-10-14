@@ -1,7 +1,7 @@
 """Core data models and schemas for RecallGuard."""
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 from pydantic import BaseModel, Field, field_validator
 
@@ -10,7 +10,7 @@ class MemoryClaim(BaseModel):
     """Represents an atomic memory claim with temporal validity and reliability attributes.
     
     A claim expresses a subject-predicate-object assertion extracted from agent
-    interactions, tagged with temporal bounds and confidence ratings.
+    interactions, tagged with temporal bounds, source verification quotes, and confidence ratings.
     """
 
     id: str = Field(
@@ -37,6 +37,10 @@ class MemoryClaim(BaseModel):
         ge=0.0,
         le=1.0,
         description="Confidence score for this claim between 0.0 and 1.0.",
+    )
+    source_quote: Optional[str] = Field(
+        default=None,
+        description="Verbatim quote from conversation text directly supporting this claim.",
     )
     source_session_id: Optional[str] = Field(
         default=None,
@@ -74,13 +78,47 @@ class MemoryClaim(BaseModel):
         """Check if this claim is expired as of a given timestamp."""
         check_time = as_of or datetime.now(timezone.utc)
         if self.valid_until is not None:
-            # Ensure check_time is timezone-aware if valid_until is timezone-aware
             if self.valid_until.tzinfo is not None and check_time.tzinfo is None:
                 check_time = check_time.replace(tzinfo=timezone.utc)
             elif self.valid_until.tzinfo is None and check_time.tzinfo is not None:
                 check_time = check_time.astimezone(timezone.utc).replace(tzinfo=None)
             return check_time > self.valid_until
         return False
+
+
+class RawExtractedClaim(BaseModel):
+    """Raw claim extracted by LLM before verification."""
+
+    subject: str = Field(..., min_length=1)
+    predicate: str = Field(..., min_length=1)
+    object_value: str = Field(..., min_length=1)
+    source_quote: str = Field(..., min_length=1)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+
+
+class ExtractionResponse(BaseModel):
+    """Structured response envelope expected from the extraction prompt."""
+
+    claims: List[RawExtractedClaim] = Field(default_factory=list)
+
+
+class ExtractionValidationIssue(BaseModel):
+    """Details of an extracted claim that failed validation or verification."""
+
+    claim_data: Dict[str, Any] = Field(default_factory=dict)
+    reason: str
+
+
+class ExtractionResult(BaseModel):
+    """Overall outcome of a memory extraction operation."""
+
+    valid_claims: List[MemoryClaim] = Field(default_factory=list)
+    rejected_claims: List[ExtractionValidationIssue] = Field(default_factory=list)
+    raw_model_output: str = ""
+    success: bool = True
+    error_message: Optional[str] = None
 
 
 class OllamaConfig(BaseModel):

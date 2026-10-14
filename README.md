@@ -90,7 +90,13 @@ pytest -v
   - Safe, repeatable SQLite initialization & storage
   - Local Ollama client configuration (`qwen3.5:0.8b`)
   - Demo failure cases & test suite
-- [ ] **Feature 02:** AI Claim Extraction Pipeline
+- [x] **Feature 02: Local AI Memory Extraction**
+  - Local conversation analysis with Qwen 3.5 (0.8B)
+  - Atomic (Subject, Predicate, Object) structured JSON extraction
+  - Verbatim source quote preservation and validation firewall
+  - Malformed and ungrounded claim quarantine
+  - Interactive user review & selective SQLite persistence
 - [ ] **Feature 03:** Temporal Conflict & Contradiction Resolution
 - [ ] **Feature 04:** Temporal Memory Retrieval Engine
 - [ ] **Feature 05:** Reliability Evaluation & Firewall Filtering
+
