@@ -19,6 +19,8 @@ from core.schemas import (
     MemoryClaim,
     RawExtractedClaim,
 )
+# Feature 04 — imported lazily to avoid circular dependency on startup
+from core.retrieval_service import RetrievalResult, RetrievalService
 
 EXTRACTION_SYSTEM_PROMPT = """You are RecallGuard Memory Extractor. Extract factual memory claims from conversations into structured JSON.
 
@@ -379,10 +381,28 @@ class MemoryService:
             )
         return queue
 
-    # --- Foundation Stubs for Upcoming Milestones ---
+    # --- Feature 04: Evidence-Grounded Retrieval ---
 
     def retrieve_reliable_memories(self, query: str) -> List[MemoryClaim]:
-        """Stub: Temporal reliability retrieval will be implemented in Feature 04."""
-        raise NotImplementedError(
-            "Reliability retrieval logic is scheduled for implementation in Feature 04."
-        )
+        """Return active, non-expired, non-superseded memory claims relevant to *query*.
+
+        Delegates to :class:`RetrievalService` which ranks results by keyword
+        overlap, filters stale records, and returns the top matching active claims.
+        """
+        svc = RetrievalService(db_manager=self.db, llm_client=self.llm)
+        result: RetrievalResult = svc.retrieve(query)
+        return result.retrieved_claims
+
+    def answer_question(self, query: str) -> RetrievalResult:
+        """End-to-end grounded Q&A: retrieve evidence → generate Ollama answer with citations.
+
+        Returns a :class:`RetrievalResult` containing:
+        - retrieved_claims : evidence used
+        - answer           : grounded answer text (empty when abstaining)
+        - abstained        : True when insufficient evidence
+        - abstention_reason: human-readable explanation
+        - evidence_ids     : IDs cited in answer
+        - evidence_quotes  : verbatim source quotes cited
+        """
+        svc = RetrievalService(db_manager=self.db, llm_client=self.llm)
+        return svc.answer(query)

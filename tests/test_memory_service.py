@@ -86,11 +86,11 @@ def test_claim_expiration_logic():
     assert indefinite_claim.is_expired() is False
 
 
-def test_future_milestones_stubs_raise_not_implemented(service):
-    """Verify that retrieval remains guarded for Feature 04."""
-    with pytest.raises(NotImplementedError) as exc_info3:
-        service.retrieve_reliable_memories("current language")
-    assert "Feature 04" in str(exc_info3.value)
+def test_retrieve_reliable_memories_implemented(service):
+    """Feature 04: retrieve_reliable_memories now returns a list (implemented)."""
+    # Should return a list (possibly empty) without raising NotImplementedError
+    result = service.retrieve_reliable_memories("current language preference")
+    assert isinstance(result, list)
 
 
 
