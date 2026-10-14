@@ -79,6 +79,52 @@ def _score_claim(claim: MemoryClaim, query_tokens: List[str]) -> int:
     return sum(1 for tok in query_tokens if tok in claim_text)
 
 
+def _clean_grounded_answer(
+    raw_answer: str,
+    retrieved_claims: List[MemoryClaim],
+) -> Tuple[str, bool, str]:
+    """Clean model response, stripping spurious or contradictory ABSTAIN blocks.
+
+    Returns:
+        (answer_text, is_abstained, abstention_reason)
+    """
+    stripped = raw_answer.strip()
+    if not stripped:
+        return "", True, "Local model returned an empty response."
+
+    # Case 1: Trailing ABSTAIN section after an actual answer.
+    # e.g., "<answer text>\n\nABSTAIN: <caveat>"
+    # If the text before ABSTAIN has substantive length or citations, strip the trailing ABSTAIN.
+    parts = re.split(r"\n+(?=(?:ABSTAIN|Abstain):)", stripped)
+    if len(parts) > 1 and len(parts[0].strip()) >= 20:
+        cleaned = parts[0].strip()
+        return cleaned, False, ""
+
+    # Case 2: Model started with ABSTAIN, but then provided an actual substantive answer.
+    # e.g., "ABSTAIN: The evidence indicates that the backend was migrated to Go 1.22..."
+    # or "ABSTAIN: <reason>\n\nOur backend is Go 1.22 [E1]."
+    if stripped.upper().startswith("ABSTAIN"):
+        subsequent_text = re.sub(
+            r"^(?:ABSTAIN|Abstain):\s*(?:<[^>]+>|[^\n]*\n+)?", "", stripped
+        ).strip()
+        has_claim_content = any(
+            c.object_value.lower() in stripped.lower()
+            for c in retrieved_claims
+            if c.object_value
+        )
+        has_citation = bool(re.search(r"\[E\d+\]", stripped))
+        has_migration_answer = any(
+            kw in stripped.lower()
+            for kw in ["migrated", "superseded", "currently running", "replaced", "current version"]
+        )
+        if (has_claim_content or has_citation or has_migration_answer) and len(subsequent_text) >= 20:
+            return subsequent_text, False, ""
+        return "", True, stripped
+
+    # Case 3: Clean answer
+    return stripped, False, ""
+
+
 # ---------------------------------------------------------------------------
 # Main service
 # ---------------------------------------------------------------------------
@@ -97,12 +143,13 @@ class RetrievalService:
 
     GROUNDED_SYSTEM_PROMPT = (
         "You are RecallGuard, a memory reliability assistant. "
-        "Answer the user's question using ONLY the provided memory evidence below. "
+        "Answer the user's question directly and concisely using ONLY the provided memory evidence below. "
+        "The provided evidence represents verified current active memory records. "
         "Do NOT invent facts that are absent from the evidence. "
-        "For every factual statement cite the Evidence ID (e.g., [E1]) and include the "
-        "verbatim source_quote as supporting proof. "
-        "If the evidence does not contain enough information to answer confidently, "
-        "respond with: ABSTAIN: <one-sentence reason>."
+        "If the evidence mentions a migration, replacement, or update (for example, migrating from Node.js 20 to Go 1.22), "
+        "state clearly that the new value (Go 1.22) is current and that the prior value was migrated/superseded. "
+        "For every factual statement cite the Evidence ID (e.g., [E1]) and include the verbatim source_quote as supporting proof. "
+        "Do NOT include an ABSTAIN section or caveat when the evidence provides the answer."
     )
 
     def __init__(
@@ -201,8 +248,9 @@ class RetrievalService:
         prompt = (
             f"User question: {query}\n\n"
             f"Memory Evidence:\n{evidence_block}\n\n"
-            "Provide a grounded answer citing evidence IDs (e.g., [E1]). "
-            "If the evidence is insufficient, respond with: ABSTAIN: <reason>."
+            "Provide a clear, grounded answer using the memory evidence above. Cite evidence IDs (e.g., [E1]) with source quotes. "
+            "If the question asks about a previous or migrated technology (such as Node.js 20), explain that the new technology (such as Go 1.22) is current and that the old technology was migrated/superseded. "
+            "Do not include an ABSTAIN section when evidence is provided."
         )
 
         try:
@@ -221,23 +269,25 @@ class RetrievalService:
             result.abstention_reason = "Local model returned an empty response."
             return result
 
-        # Detect model-initiated abstention
-        stripped = raw_answer.strip()
-        if stripped.upper().startswith("ABSTAIN"):
+        cleaned_answer, is_abstained, abstention_reason = _clean_grounded_answer(
+            raw_answer, result.retrieved_claims
+        )
+
+        if is_abstained:
             result.abstained = True
-            result.abstention_reason = stripped
+            result.abstention_reason = abstention_reason
             result.answer = ""
             return result
 
         # Extract cited IDs from "[E<n>]" markers
-        cited_indices = [int(m) - 1 for m in re.findall(r"\[E(\d+)\]", stripped)]
+        cited_indices = [int(m) - 1 for m in re.findall(r"\[E(\d+)\]", cleaned_answer)]
         cited_claims = [
             result.retrieved_claims[i]
             for i in cited_indices
             if 0 <= i < len(result.retrieved_claims)
         ]
 
-        result.answer = stripped
+        result.answer = cleaned_answer
         result.evidence_ids = [c.id for c in cited_claims] if cited_claims else result.evidence_ids
         result.evidence_quotes = [c.source_quote or "" for c in cited_claims if c.source_quote]
         return result

@@ -506,3 +506,72 @@ class TestChartData:
         assert len(chart["recallguard_values"]) == n
         assert len(chart["naive_baseline_values"]) == n
         assert len(chart["improvements"]) == n
+
+
+# ---------------------------------------------------------------------------
+# Feature 04 Consistency Regression: Stale Claim Used vs Aggregate Metric
+# ---------------------------------------------------------------------------
+
+class TestStaleClaimUsedConsistency:
+    """Regression tests: per-sample 'Stale Claim Used' has a clearly defined meaning
+    and agrees with the aggregate stale-memory error metric.
+    """
+
+    def test_stale_claim_used_matches_aggregate_metric(self) -> None:
+        evaluator = ReliabilityEvaluator()
+        report = evaluator.run_full_evaluation()
+        stale_candidate_samples = [
+            r for r in report.per_sample_results if r.sample.has_stale_candidate
+        ]
+        assert len(stale_candidate_samples) > 0, "Evaluation dataset must contain samples with stale candidates"
+
+        # Stale errors in per-sample results
+        rg_stale_errors = sum(1 for r in stale_candidate_samples if r.used_stale_claim)
+        expected_rate = round(rg_stale_errors / len(stale_candidate_samples), 4)
+
+        assert report.stale_memory_error_rate == expected_rate
+        # For RecallGuard, stale claims are properly filtered so rate is 0.0
+        assert report.stale_memory_error_rate == 0.0
+        assert rg_stale_errors == 0
+
+    def test_samples_without_stale_candidates_never_flagged_as_error(self) -> None:
+        """Samples without a stale candidate do not contribute to stale-claim error rate."""
+        evaluator = ReliabilityEvaluator()
+        report = evaluator.run_full_evaluation()
+        non_stale_samples = [
+            r for r in report.per_sample_results if not r.sample.has_stale_candidate
+        ]
+        for r in non_stale_samples:
+            assert not r.used_stale_claim, (
+                f"Sample '{r.sample.question}' has no stale candidate but used_stale_claim was True"
+            )
+
+    def test_per_sample_table_display_representation(self) -> None:
+        """Verify the UI mapping logic:
+        - Samples with stale candidate display '✅' (when safe) or '🚨' (when used)
+        - Samples without stale candidate display '-' (not applicable)
+        """
+        evaluator = ReliabilityEvaluator()
+        report = evaluator.run_full_evaluation()
+
+        display_rows = []
+        for psr in report.per_sample_results:
+            stale_used_display = (
+                "🚨" if psr.used_stale_claim
+                else ("-" if not psr.sample.has_stale_candidate else "✅")
+            )
+            display_rows.append({
+                "question": psr.sample.question,
+                "has_candidate": psr.sample.has_stale_candidate,
+                "display": stale_used_display,
+            })
+
+        candidate_rows = [r for r in display_rows if r["has_candidate"]]
+        non_candidate_rows = [r for r in display_rows if not r["has_candidate"]]
+
+        assert len(candidate_rows) == 2  # Q1 and Q6 in the synthetic dataset
+        for r in candidate_rows:
+            assert r["display"] == "✅", f"Expected ✅ for candidate row, got {r['display']}"
+
+        for r in non_candidate_rows:
+            assert r["display"] == "-", f"Expected '-' for non-candidate row, got {r['display']}"

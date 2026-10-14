@@ -1089,12 +1089,18 @@ with tab_lab:
                     "Abstained": "✅" if (rr and rr.abstained) else "❌",
                     "Correctly Abstained": "✅" if psr.correctly_abstained else ("-" if not psr.sample.should_abstain else "❌"),
                     "Evidence Hit": "✅" if psr.evidence_hit else ("-" if psr.sample.should_abstain else "❌"),
-                    "Stale Claim Used": "🚨" if psr.used_stale_claim else "✅",
+                    "Stale Candidate": "⚠️" if psr.sample.has_stale_candidate else "-",
+                    "Stale Claim Used": "🚨" if psr.used_stale_claim else ("-" if not psr.sample.has_stale_candidate else "✅"),
                     "Has Conflict": "⚠️" if psr.sample.has_conflict else "-",
                     "Conflict in DB": "✅" if psr.conflict_in_db else ("-" if not psr.sample.has_conflict else "❌"),
                     "Evidence": f"{len(rr.retrieved_claims)} claim(s)" if (rr and not rr.abstained) else "None",
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.caption(
+                "Legend: **Stale Candidate**: Superseded/expired claim exists in store for question topic. "
+                "**Stale Claim Used**: 🚨 = stale claim returned (error), ✅ = correctly excluded, - = not applicable. "
+                "Aggregate **Stale Error Rate** denominator equals samples with a Stale Candidate."
+            )
 
             if report.notes:
                 with st.expander("ℹ️ Metric Explanations & Notes", expanded=False):
