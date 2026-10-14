@@ -1,6 +1,6 @@
 """RecallGuard - Temporal Memory Reliability Firewall for AI Agents.
 
-Feature 03: Temporal Memory Conflict Resolution & Audit History.
+Feature 04: Evidence-Grounded Retrieval and Reliability Evaluation.
 """
 
 from datetime import datetime, timezone
@@ -10,8 +10,10 @@ import streamlit as st
 import pandas as pd
 
 from core.database import DatabaseManager, DEFAULT_DB_PATH
+from core.evaluator import ReliabilityEvaluator, build_synthetic_dataset
 from core.llm import OllamaClient
 from core.memory_service import MemoryService
+from core.retrieval_service import RetrievalService
 from core.schemas import ClaimStatus, ConflictType, MemoryClaim
 
 # Set page configuration
@@ -226,18 +228,20 @@ st.markdown(
     """
     <span class='roadmap-pill' style='opacity:0.8'>MILESTONE 1: Foundation (Done)</span>
     <span class='roadmap-pill' style='opacity:0.8'>MILESTONE 2: Local AI Extraction (Done)</span>
-    <span class='roadmap-pill roadmap-active'>MILESTONE 3: Temporal Conflict Resolution (Active)</span>
-    <span class='roadmap-pill' style='opacity:0.6'>NEXT: Feature 04 Reliability Retrieval</span>
+    <span class='roadmap-pill' style='opacity:0.8'>MILESTONE 3: Conflict Resolution (Done)</span>
+    <span class='roadmap-pill roadmap-active'>MILESTONE 4: Evidence Retrieval &amp; Reliability Lab (Active)</span>
     """,
     unsafe_allow_html=True,
 )
 st.write("")
 
 # --- TABS ---
-tab_conflict, tab_extract, tab_store, tab_cases, tab_problem, tab_overview = st.tabs(
+tab_conflict, tab_extract, tab_ask, tab_lab, tab_store, tab_cases, tab_problem, tab_overview = st.tabs(
     [
         "⚖️ Memory Conflict Review",
         "🧠 Local AI Memory Extraction",
+        "💬 Ask RecallGuard",
+        "🔬 Reliability Lab",
         "💾 Claim Store & History Inspector",
         "📂 Failure Scenarios (Demo Cases)",
         "⚠️ The Memory Problem Explained",
@@ -786,3 +790,403 @@ with tab_overview:
         st.write(f"- **File Location:** `{Path(DEFAULT_DB_PATH).resolve()}`")
         st.write(f"- **Recorded Claims:** {stats['total']} ({stats['active']} active)")
         st.write(f"- **Audit History:** {stats.get('superseded', 0)} superseded, {stats.get('needs_review', 0)} in review")
+
+
+# ==============================================================================
+# TAB 3: Ask RecallGuard (Feature 04 – Evidence-Grounded Retrieval)
+# ==============================================================================
+with tab_ask:
+    st.subheader("💬 Ask RecallGuard")
+    st.write(
+        """
+        Ask any question about your stored memories. **RecallGuard** retrieves only active,
+        non-expired, non-superseded evidence, then generates a grounded local-LLM answer
+        that **cites exact source quotes**. If the evidence base is insufficient, the system
+        **safely abstains** rather than hallucinating an answer.
+        """
+    )
+
+    st.markdown(
+        """
+        <div class='callout-box'>
+        🔒 <strong>Zero cloud API calls.</strong> All inference runs locally via Ollama 
+        <code>qwen3.5:0.8b</code>. Superseded and expired claims are automatically excluded.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    ask_col, result_col = st.columns([1, 1], gap="large")
+
+    with ask_col:
+        st.markdown("##### 🔍 Your Question")
+        user_question = st.text_area(
+            "Enter your question about stored memories:",
+            placeholder="e.g. What programming language does the user prefer?",
+            height=120,
+            key="ask_question_input",
+        )
+
+        retrieval_mode = st.radio(
+            "Retrieval mode:",
+            ["Retrieve evidence only", "Retrieve + generate grounded answer"],
+            index=1,
+            key="retrieval_mode",
+        )
+
+        min_conf = st.slider(
+            "Minimum claim confidence:",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            step=0.05,
+            key="retrieval_min_conf",
+        )
+
+        ask_btn = st.button(
+            "🔍 Search Memory",
+            use_container_width=True,
+            key="ask_btn",
+            disabled=not user_question.strip(),
+        )
+
+    with result_col:
+        if ask_btn and user_question.strip():
+            from core.retrieval_service import RetrievalConfig
+
+            cfg = RetrievalConfig(min_confidence=min_conf)
+            retrieval_svc = RetrievalService(
+                db_manager=service.db,
+                llm_client=service.llm,
+                config=cfg,
+            )
+
+            with st.spinner("Searching memory store…"):
+                if retrieval_mode == "Retrieve evidence only":
+                    rr = retrieval_svc.retrieve(user_question)
+                else:
+                    rr = retrieval_svc.answer(user_question)
+
+            if rr.abstained:
+                st.markdown(
+                    f"""
+                    <div class='callout-box callout-warning'>
+                    <strong>⚠️ RecallGuard Abstained</strong><br/>
+                    {rr.abstention_reason}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                if rr.answer:
+                    st.markdown("##### 📝 Grounded Answer")
+                    st.markdown(
+                        f"""
+                        <div class='callout-box'>
+                        {rr.answer.replace(chr(10), '<br/>')}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown(f"##### 🗂️ Retrieved Evidence ({len(rr.retrieved_claims)} claim{'s' if len(rr.retrieved_claims) != 1 else ''})")
+                st.caption(f"Mean evidence confidence: **{rr.confidence:.0%}** | Filtered out: **{rr.filtered_out_count}** stale/expired claim(s)")
+
+                for i, claim in enumerate(rr.retrieved_claims, start=1):
+                    with st.expander(f"[E{i}] {claim.subject} → {claim.predicate} = **{claim.object_value}**", expanded=i == 1):
+                        col_a, col_b, col_c = st.columns(3)
+                        col_a.metric("Confidence", f"{claim.confidence:.0%}")
+                        col_b.metric("Status", claim.status.upper())
+                        col_c.metric("ID", claim.id[:8] + "…")
+
+                        if claim.source_quote:
+                            st.markdown(
+                                f"<div class='quote-box'>📎 {claim.source_quote}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        st.caption(f"Created: {claim.created_at}")
+                        if claim.valid_until:
+                            st.caption(f"Valid until: {claim.valid_until}")
+        else:
+            st.markdown(
+                """
+                <div style='text-align:center; color:#475569; padding: 3rem 1rem;'>
+                <div style='font-size:3rem'>🔍</div>
+                <div style='font-size:1.1rem; margin-top:0.5rem;'>Ask a question to retrieve grounded evidence</div>
+                <div style='font-size:0.85rem; margin-top:0.3rem;'>RecallGuard will search your memory store and cite verbatim source quotes</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+# ==============================================================================
+# TAB 4: Reliability Lab (Feature 04 – Evaluation Dashboard)
+# ==============================================================================
+with tab_lab:
+    try:
+        import plotly.graph_objects as go
+        import plotly.express as px
+        HAS_PLOTLY = True
+    except ImportError:
+        HAS_PLOTLY = False
+
+    st.subheader("🔬 Reliability Lab")
+    st.write(
+        """
+        The **Reliability Lab** runs a synthetic evaluation suite entirely in-process — no
+        cloud calls, no external datasets. It measures four core reliability metrics and
+        compares RecallGuard against a **naive last-write-wins baseline** to quantify the
+        firewall's real-world value.
+        """
+    )
+
+    lab_col1, lab_col2 = st.columns([1, 2], gap="large")
+
+    with lab_col1:
+        st.markdown("##### 📐 Evaluation Metrics")
+        st.markdown(
+            """
+            | Metric | Description |
+            |---|---|
+            | **Stale Memory Error Rate** | Fraction of answers using superseded/expired claims |
+            | **Conflict Detection Recall** | Fraction of true conflicts flagged |
+            | **Evidence Coverage** | Fraction of questions answered with evidence |
+            | **Safe Abstention Rate** | Fraction of unanswerable questions correctly abstained |
+            """
+        )
+
+        st.markdown("##### ⚙️ Evaluation Settings")
+        eval_dataset_size = st.number_input(
+            "Synthetic dataset size (samples):",
+            min_value=4,
+            max_value=8,
+            value=8,
+            step=1,
+            key="eval_dataset_size",
+            help="The synthetic dataset is fixed at 8 samples; this is a display setting.",
+        )
+        run_eval_btn = st.button(
+            "▶️ Run Reliability Evaluation",
+            use_container_width=True,
+            key="run_eval_btn",
+            type="primary",
+        )
+
+    with lab_col2:
+        if run_eval_btn:
+            with st.spinner("Running reliability evaluation on synthetic dataset…"):
+                evaluator = ReliabilityEvaluator()
+                report = evaluator.run_full_evaluation()
+                chart_data = ReliabilityEvaluator.build_metrics_chart_data(report)
+                st.session_state["eval_report"] = report
+                st.session_state["eval_chart_data"] = chart_data
+
+        report = st.session_state.get("eval_report")
+        chart_data = st.session_state.get("eval_chart_data")
+
+        if report is not None and chart_data is not None:
+            # ---- Summary metrics ----
+            st.markdown("##### 📊 RecallGuard vs Naive Baseline")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric(
+                "Stale Error Rate",
+                f"{report.stale_memory_error_rate:.0%}",
+                delta=f"{report.improvements_over_baseline.get('stale_memory_error_rate', 0):+.0%} vs naive",
+                delta_color="inverse",
+            )
+            m2.metric(
+                "Conflict Recall",
+                f"{report.conflict_detection_recall:.0%}",
+                delta=f"{report.improvements_over_baseline.get('conflict_detection_recall', 0):+.0%} vs naive",
+            )
+            m3.metric(
+                "Evidence Coverage",
+                f"{report.evidence_coverage:.0%}",
+                delta=f"{report.improvements_over_baseline.get('evidence_coverage', 0):+.0%} vs naive",
+            )
+            m4.metric(
+                "Safe Abstention",
+                f"{report.safe_abstention_rate:.0%}",
+                delta=f"{report.improvements_over_baseline.get('safe_abstention_rate', 0):+.0%} vs naive",
+            )
+
+            # ---- Plotly grouped bar chart ----
+            if HAS_PLOTLY:
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    name="RecallGuard",
+                    x=chart_data["labels"],
+                    y=chart_data["recallguard_values"],
+                    marker_color="#3B82F6",
+                    text=[f"{v:.0%}" for v in chart_data["recallguard_values"]],
+                    textposition="outside",
+                ))
+                fig.add_trace(go.Bar(
+                    name="Naive Baseline",
+                    x=chart_data["labels"],
+                    y=chart_data["naive_baseline_values"],
+                    marker_color="#EF4444",
+                    text=[f"{v:.0%}" for v in chart_data["naive_baseline_values"]],
+                    textposition="outside",
+                ))
+                fig.update_layout(
+                    barmode="group",
+                    title="RecallGuard vs Naive Baseline — Reliability Metrics",
+                    yaxis=dict(tickformat=".0%", range=[0, 1.25], title="Score"),
+                    xaxis_title="Metric",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(15,23,42,0.6)",
+                    font=dict(color="#CBD5E1"),
+                    height=380,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # ---- Improvements radar ----
+                labels_radar = chart_data["labels"]
+                improvements = chart_data["improvements"]
+                radar_fig = go.Figure(go.Scatterpolar(
+                    r=chart_data["recallguard_values"] + [chart_data["recallguard_values"][0]],
+                    theta=labels_radar + [labels_radar[0]],
+                    fill="toself",
+                    name="RecallGuard",
+                    line_color="#3B82F6",
+                    fillcolor="rgba(59,130,246,0.2)",
+                ))
+                radar_fig.add_trace(go.Scatterpolar(
+                    r=chart_data["naive_baseline_values"] + [chart_data["naive_baseline_values"][0]],
+                    theta=labels_radar + [labels_radar[0]],
+                    fill="toself",
+                    name="Naive Baseline",
+                    line_color="#EF4444",
+                    fillcolor="rgba(239,68,68,0.15)",
+                ))
+                radar_fig.update_layout(
+                    polar=dict(
+                        radialaxis=dict(visible=True, range=[0, 1], tickformat=".0%", color="#94A3B8"),
+                        bgcolor="rgba(15,23,42,0.7)",
+                    ),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#CBD5E1"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
+                    title="Reliability Radar",
+                    height=360,
+                )
+                st.plotly_chart(radar_fig, use_container_width=True)
+            else:
+                st.warning("Install `plotly` for interactive charts: `pip install plotly`")
+                st.json(chart_data)
+
+            # ---- Per-sample breakdown table ----
+            st.markdown("##### 📋 Per-Sample Results")
+            rows = []
+            for psr in report.per_sample_results:
+                rr = psr.retrieval_result
+                rows.append({
+                    "Question": psr.sample.question[:60] + ("…" if len(psr.sample.question) > 60 else ""),
+                    "Should Abstain": "✅" if psr.sample.should_abstain else "-",
+                    "Abstained": "✅" if (rr and rr.abstained) else "❌",
+                    "Correctly Abstained": "✅" if psr.correctly_abstained else ("-" if not psr.sample.should_abstain else "❌"),
+                    "Evidence Hit": "✅" if psr.evidence_hit else ("-" if psr.sample.should_abstain else "❌"),
+                    "Stale Claim Used": "🚨" if psr.used_stale_claim else "✅",
+                    "Has Conflict": "⚠️" if psr.sample.has_conflict else "-",
+                    "Conflict in DB": "✅" if psr.conflict_in_db else ("-" if not psr.sample.has_conflict else "❌"),
+                    "Evidence": f"{len(rr.retrieved_claims)} claim(s)" if (rr and not rr.abstained) else "None",
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            if report.notes:
+                with st.expander("ℹ️ Metric Explanations & Notes", expanded=False):
+                    for k, v in report.notes.items():
+                        st.markdown(f"- **{k.replace('_', ' ').title()}**: {v}")
+
+            # ---- Synthetic dataset details ----
+            with st.expander("🗃️ View Synthetic Dataset Details"):
+                dataset, _ = build_synthetic_dataset()
+                st.markdown(f"**Seed claims:** {len(dataset.seed_claims)}  |  **Stale claims:** {len(dataset.stale_claims)}  |  **Samples:** {len(dataset.samples)}")
+                seed_rows = [
+                    {
+                        "ID": c.id[:8] + "…",
+                        "Subject": c.subject,
+                        "Predicate": c.predicate,
+                        "Value": c.object_value,
+                        "Status": c.status,
+                        "Confidence": f"{c.confidence:.0%}",
+                    }
+                    for c in dataset.seed_claims + dataset.stale_claims
+                ]
+                st.dataframe(pd.DataFrame(seed_rows), use_container_width=True, hide_index=True)
+
+        else:
+            st.markdown(
+                """
+                <div style='text-align:center; color:#475569; padding: 3rem 1rem;'>
+                <div style='font-size:3rem'>🔬</div>
+                <div style='font-size:1.1rem; margin-top:0.5rem;'>Reliability Lab ready</div>
+                <div style='font-size:0.85rem; margin-top:0.3rem;'>Click "Run Reliability Evaluation" to benchmark RecallGuard vs naive baseline</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    # --- Current store reliability audit ---
+    st.divider()
+    st.markdown("##### 🏥 Live Memory Store Health Audit")
+    st.caption("Evaluates the reliability of every claim currently in your production memory store.")
+
+    if st.button("🩺 Run Store Health Audit", key="health_audit_btn"):
+        all_claims = service.list_claims()
+        if not all_claims:
+            st.info("No claims in the memory store yet. Add some via the AI Extraction tab.")
+        else:
+            evaluator = ReliabilityEvaluator()
+            batch_result = evaluator.evaluate_batch(all_claims)
+            agg = batch_result["aggregate"]
+
+            ha1, ha2, ha3, ha4 = st.columns(4)
+            ha1.metric("Total Claims", batch_result["total"])
+            ha2.metric("Stale Rate", f"{agg['stale_rate']:.0%}")
+            ha3.metric("Contradiction Risk Rate", f"{agg['contradiction_risk_rate']:.0%}")
+            ha4.metric("Mean Veracity Confidence", f"{agg['mean_veracity_confidence']:.0%}")
+
+            if HAS_PLOTLY:
+                status_counts = {}
+                for ev in batch_result["evaluations"]:
+                    status_counts[ev["status"]] = status_counts.get(ev["status"], 0) + 1
+
+                pie_fig = go.Figure(go.Pie(
+                    labels=list(status_counts.keys()),
+                    values=list(status_counts.values()),
+                    hole=0.55,
+                    marker_colors=["#10B981", "#EF4444", "#F59E0B"],
+                ))
+                pie_fig.update_layout(
+                    title="Claim Status Distribution",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#CBD5E1"),
+                    height=300,
+                )
+                st.plotly_chart(pie_fig, use_container_width=True)
+
+            quarantine_claims = [
+                ev for ev in batch_result["evaluations"] if ev["quarantine_recommendation"]
+            ]
+            if quarantine_claims:
+                st.warning(f"⚠️ {len(quarantine_claims)} claim(s) recommended for quarantine (stale/expired/conflicted).")
+                qrows = [
+                    {
+                        "ID": ev["claim_id"][:8] + "…",
+                        "Subject": ev["subject"],
+                        "Predicate": ev["predicate"],
+                        "Status": ev["status"],
+                        "Staleness": f"{ev['staleness_score']:.0%}",
+                        "Veracity": f"{ev['veracity_confidence']:.0%}",
+                        "Expired": "🚨" if ev["is_expired"] else "-",
+                    }
+                    for ev in quarantine_claims
+                ]
+                st.dataframe(pd.DataFrame(qrows), use_container_width=True, hide_index=True)
+            else:
+                st.success("✅ All claims in the memory store pass reliability checks.")
+
