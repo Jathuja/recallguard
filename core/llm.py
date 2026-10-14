@@ -21,7 +21,7 @@ class OllamaClient:
         self,
         model: Optional[str] = None,
         host: Optional[str] = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
     ):
         self.model = model or os.getenv("OLLAMA_MODEL", DEFAULT_MODEL)
         self.host = host or os.getenv("OLLAMA_HOST", DEFAULT_HOST)
@@ -49,9 +49,9 @@ class OllamaClient:
         """Return a list of locally available model names."""
         try:
             response = self._client.list()
-            # ollama-python response may contain models as objects with 'model' attribute or 'name'
             models = []
-            for item in response.get("models", []):
+            model_items = response.get("models", []) if isinstance(response, dict) else getattr(response, "models", [])
+            for item in model_items:
                 if hasattr(item, "model"):
                     models.append(item.model)
                 elif isinstance(item, dict) and "model" in item:
@@ -68,8 +68,67 @@ class OllamaClient:
         """Check if the configured model is installed locally in Ollama."""
         target = model_name or self.model
         available = self.list_models()
-        # Check for exact match or prefix match (e.g. qwen3.5:0.8b vs qwen3.5:0.8b-latest)
         return any(target in m or m.startswith(target) for m in available)
+
+    def chat_structured(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        format_type: str = "json",
+        think: bool = False,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Execute a structured chat completion using local Ollama.
+        
+        Args:
+            prompt: User message content.
+            system_prompt: System instruction prompt.
+            format_type: Format constraint (default 'json').
+            think: Whether to allow reasoning thinking tokens (default False for fast direct JSON).
+            options: Additional inference options like temperature or num_predict.
+            
+        Returns:
+            Extracted text response from the model.
+        """
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        opts = {"temperature": 0.0, "num_predict": 1024}
+        if options:
+            opts.update(options)
+
+        # Call ollama chat, passing think=False if supported
+        try:
+            response = self._client.chat(
+                model=self.model,
+                messages=messages,
+                format=format_type,
+                think=think,
+                options=opts,
+            )
+        except TypeError:
+            # Fallback for client versions that don't take think parameter
+            response = self._client.chat(
+                model=self.model,
+                messages=messages,
+                format=format_type,
+                options=opts,
+            )
+
+        # Extract content supporting both Pydantic ChatResponse and dict responses
+        content = ""
+        if hasattr(response, "message"):
+            msg = response.message
+            content = getattr(msg, "content", "") or ""
+            if not content and hasattr(msg, "thinking"):
+                content = getattr(msg, "thinking", "") or ""
+        elif isinstance(response, dict) and "message" in response:
+            msg = response["message"]
+            content = msg.get("content", "") or msg.get("thinking", "")
+
+        return content
 
     def generate(
         self,
@@ -77,24 +136,10 @@ class OllamaClient:
         system: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Foundational generation call to the local Ollama model.
-        
-        Args:
-            prompt: User or prompt text to pass to Ollama.
-            system: Optional system instruction prompt.
-            options: Optional inference parameters (temperature, num_predict, etc.).
-            
-        Returns:
-            The generated string response.
-        """
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-
-        response = self._client.chat(
-            model=self.model,
-            messages=messages,
-            options=options or {},
+        """Foundational generation call to the local Ollama model."""
+        return self.chat_structured(
+            prompt=prompt,
+            system_prompt=system,
+            format_type="",
+            options=options,
         )
-        return response["message"]["content"]
