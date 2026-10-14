@@ -14,7 +14,12 @@ from core.evaluator import (
 )
 from core.llm import OllamaClient
 from core.memory_service import MemoryService
-from core.retrieval_service import RetrievalConfig, RetrievalResult, RetrievalService
+from core.retrieval_service import (
+    RetrievalConfig,
+    RetrievalResult,
+    RetrievalService,
+    _clean_grounded_answer,
+)
 from core.schemas import (
     ClaimStatus,
     ConflictResolutionDecision,
@@ -46,6 +51,7 @@ __all__ = [
     "MemoryService",
     "evaluate_claim_conflict",
     # Feature 04 – Retrieval
+    "_clean_grounded_answer",
     "RetrievalConfig",
     "RetrievalResult",
     "RetrievalService",

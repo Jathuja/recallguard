@@ -9,7 +9,14 @@ import pytest
 
 from core.database import DatabaseManager
 from core.llm import OllamaClient
-from core.retrieval_service import RetrievalConfig, RetrievalResult, RetrievalService, _tokenize, _score_claim
+from core.retrieval_service import (
+    RetrievalConfig,
+    RetrievalResult,
+    RetrievalService,
+    _clean_grounded_answer,
+    _score_claim,
+    _tokenize,
+)
 from core.schemas import ClaimStatus, MemoryClaim
 
 
@@ -284,3 +291,90 @@ class TestRetrievalConfig:
         svc = RetrievalService(db_manager=db, llm_client=mock_llm, config=cfg)
         assert svc.config.max_results == 2
         assert svc.config.min_confidence == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Feature 04 Consistency Regression: Node.js 20 migration answer
+# ---------------------------------------------------------------------------
+
+class TestNodeJsMigrationConsistency:
+    """Regression tests: asking about old Node.js 20 backend produces a clear,
+    evidence-grounded answer that Go 1.22 is current without contradictory ABSTAIN sections.
+    """
+
+    @pytest.fixture()
+    def migration_db(self) -> DatabaseManager:
+        db = DatabaseManager(db_path=":memory:")
+        db.init_db()
+        go_claim = MemoryClaim(
+            subject="backend_service",
+            predicate="framework",
+            object_value="Go 1.22",
+            source_quote="We decided to migrate the backend service from Node.js 20 to Go 1.22.",
+            status=ClaimStatus.ACTIVE.value,
+            confidence=0.95,
+        )
+        nodejs_claim = MemoryClaim(
+            subject="backend_service",
+            predicate="framework",
+            object_value="Node.js 20",
+            source_quote="Our backend service runs on Node.js 20.",
+            status=ClaimStatus.SUPERSEDED.value,
+            confidence=0.90,
+            superseded_by=go_claim.id,
+            is_active=False,
+        )
+        db.insert_claim(go_claim)
+        db.insert_claim(nodejs_claim)
+        return db
+
+    def test_migration_answer_strips_contradictory_trailing_abstain(
+        self, migration_db: DatabaseManager
+    ) -> None:
+        """When LLM returns an answer followed by a contradictory ABSTAIN section,
+        the ABSTAIN section is stripped and the grounded answer is retained."""
+        mock_llm = MagicMock(spec=OllamaClient)
+        mock_llm.generate.return_value = (
+            "No, our backend is no longer running Node.js 20; it has been migrated to Go 1.22 [E1]. "
+            'The source quote explicitly states: "We decided to migrate the backend service from Node.js 20 to Go 1.22."\n\n'
+            "ABSTAIN: The evidence indicates migration to Go 1.22, but does not explicitly state if migration is complete."
+        )
+        svc = RetrievalService(db_manager=migration_db, llm_client=mock_llm)
+        result = svc.answer("Is our backend still running Node.js 20?")
+        assert not result.abstained
+        assert "Go 1.22" in result.answer
+        assert "ABSTAIN" not in result.answer
+        assert len(result.evidence_ids) >= 1
+
+    def test_migration_answer_recovers_from_spurious_abstain_prefix(
+        self, migration_db: DatabaseManager
+    ) -> None:
+        """When LLM incorrectly prefixes a substantive answer with ABSTAIN:, the prefix
+        is cleaned and the answer is returned rather than discarded."""
+        mock_llm = MagicMock(spec=OllamaClient)
+        mock_llm.generate.return_value = (
+            "ABSTAIN: The provided evidence indicates that the backend service was migrated from Node.js 20 to Go 1.22, "
+            "meaning it is currently running Go 1.22 and not Node.js 20 [E1]."
+        )
+        svc = RetrievalService(db_manager=migration_db, llm_client=mock_llm)
+        result = svc.answer("Does our backend service run on Node.js 20?")
+        assert not result.abstained
+        assert "Go 1.22" in result.answer
+        assert not result.answer.startswith("ABSTAIN")
+
+    def test_clean_grounded_answer_preserves_genuine_abstention(self) -> None:
+        """Genuine model abstention when evidence is insufficient remains an abstention."""
+        claim = MemoryClaim(subject="system", predicate="status", object_value="ok")
+        raw = "ABSTAIN: The provided memory evidence contains no information to answer this question."
+        ans, abstained, reason = _clean_grounded_answer(raw, [claim])
+        assert abstained is True
+        assert ans == ""
+        assert "ABSTAIN" in reason
+
+    def test_clean_grounded_answer_preserves_normal_answer(self) -> None:
+        claim = MemoryClaim(subject="backend", predicate="framework", object_value="Go 1.22")
+        raw = "The backend runs Go 1.22 [E1]."
+        ans, abstained, reason = _clean_grounded_answer(raw, [claim])
+        assert abstained is False
+        assert ans == raw
+        assert reason == ""
