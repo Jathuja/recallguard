@@ -1,6 +1,6 @@
 """RecallGuard - Temporal Memory Reliability Firewall for AI Agents.
 
-Feature 02: Local AI Memory Extraction with Verbatim Grounding.
+Feature 03: Temporal Memory Conflict Resolution & Audit History.
 """
 
 from datetime import datetime, timezone
@@ -12,7 +12,7 @@ import pandas as pd
 from core.database import DatabaseManager, DEFAULT_DB_PATH
 from core.llm import OllamaClient
 from core.memory_service import MemoryService
-from core.schemas import MemoryClaim
+from core.schemas import ClaimStatus, ConflictType, MemoryClaim
 
 # Set page configuration
 st.set_page_config(
@@ -53,6 +53,13 @@ st.markdown(
         padding: 1rem 1.2rem;
         margin-bottom: 0.9rem;
     }
+    .conflict-container {
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(245, 158, 11, 0.4);
+        border-radius: 10px;
+        padding: 1.2rem;
+        margin-bottom: 1.2rem;
+    }
     .quote-box {
         background-color: rgba(15, 23, 42, 0.85);
         border-left: 3px solid #10B981;
@@ -62,10 +69,6 @@ st.markdown(
         font-style: italic;
         color: #D1FAE5;
         margin-top: 0.5rem;
-    }
-    .quote-rejected {
-        border-left-color: #EF4444;
-        color: #FCA5A5;
     }
     .status-badge-ok {
         background-color: #064E3B;
@@ -88,6 +91,15 @@ st.markdown(
     .status-badge-err {
         background-color: #7F1D1D;
         color: #F87171;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        display: inline-block;
+    }
+    .status-badge-neutral {
+        background-color: #374151;
+        color: #D1D5DB;
         padding: 3px 8px;
         border-radius: 6px;
         font-size: 0.8rem;
@@ -119,9 +131,9 @@ st.markdown(
         margin-right: 6px;
     }
     .roadmap-active {
-        background-color: rgba(16, 185, 129, 0.2);
-        border: 1px solid rgba(16, 185, 129, 0.5);
-        color: #34D399;
+        background-color: rgba(245, 158, 11, 0.2);
+        border: 1px solid rgba(245, 158, 11, 0.5);
+        color: #FBBF24;
     }
     </style>
     """,
@@ -147,7 +159,6 @@ with st.sidebar:
     st.divider()
 
     st.markdown("#### ⚙️ Engine Status")
-    # Check Ollama connection
     ollama_ok = service.llm.check_connection()
     model_ok = service.llm.is_model_available() if ollama_ok else False
 
@@ -181,9 +192,17 @@ with st.sidebar:
     st.divider()
     st.markdown("#### 📊 Store Overview")
     stats = service.get_stats()
-    col_sb1, col_sb2 = st.columns(2)
-    col_sb1.metric("Total Claims", stats["total"])
-    col_sb2.metric("Active", stats["active"])
+    c_sb1, c_sb2 = st.columns(2)
+    c_sb1.metric("Total", stats["total"])
+    c_sb2.metric("Active", stats["active"])
+
+    c_sb3, c_sb4 = st.columns(2)
+    c_sb3.metric("Superseded", stats.get("superseded", 0))
+    pending_count = stats.get("needs_review", 0)
+    c_sb4.metric("Needs Review", pending_count)
+
+    if pending_count > 0:
+        st.warning(f"⚠️ {pending_count} conflict(s) pending review in Tab 1!")
 
     st.divider()
     st.markdown("#### 🛠️ Database Actions")
@@ -206,18 +225,20 @@ st.markdown(
 st.markdown(
     """
     <span class='roadmap-pill' style='opacity:0.8'>MILESTONE 1: Foundation (Done)</span>
-    <span class='roadmap-pill roadmap-active'>MILESTONE 2: Local AI Memory Extraction (Active)</span>
-    <span class='roadmap-pill' style='opacity:0.6'>NEXT: Feature 03 Conflict Resolution</span>
+    <span class='roadmap-pill' style='opacity:0.8'>MILESTONE 2: Local AI Extraction (Done)</span>
+    <span class='roadmap-pill roadmap-active'>MILESTONE 3: Temporal Conflict Resolution (Active)</span>
+    <span class='roadmap-pill' style='opacity:0.6'>NEXT: Feature 04 Reliability Retrieval</span>
     """,
     unsafe_allow_html=True,
 )
 st.write("")
 
 # --- TABS ---
-tab_extract, tab_store, tab_cases, tab_problem, tab_overview = st.tabs(
+tab_conflict, tab_extract, tab_store, tab_cases, tab_problem, tab_overview = st.tabs(
     [
+        "⚖️ Memory Conflict Review",
         "🧠 Local AI Memory Extraction",
-        "💾 Claim Store & Schema Inspector",
+        "💾 Claim Store & History Inspector",
         "📂 Failure Scenarios (Demo Cases)",
         "⚠️ The Memory Problem Explained",
         "🏛️ Foundation Overview",
@@ -225,7 +246,157 @@ tab_extract, tab_store, tab_cases, tab_problem, tab_overview = st.tabs(
 )
 
 # ==============================================================================
-# TAB 1: Local AI Memory Extraction (Feature 02)
+# TAB 1: Memory Conflict Review (Feature 03)
+# ==============================================================================
+with tab_conflict:
+    st.subheader("⚖️ Temporal Memory Conflict Resolution & Review")
+    st.write(
+        """
+        Autonomous agents frequently encounter contradictory statements across conversations. 
+        **RecallGuard** enforces deterministic evidence-grounded conflict decisions:
+        - **Exact Duplicates:** Prevent redundant store bloat.
+        - **Explicit Updates:** Recognized when verified source quotes contain transition evidence (e.g., *"migrated from X to Y"*).
+        - **Ambiguous Changes:** Quarantined as `needs_review` so an unverified assertion never blindly supersedes established facts.
+        """
+    )
+
+    review_queue = service.list_review_queue()
+
+    col_btn1, col_btn2 = st.columns([1, 1])
+    with col_btn1:
+        st.markdown(f"##### 📋 Conflict Review Queue ({len(review_queue)} Pending)")
+    with col_btn2:
+        if st.button("🧪 Seed Demo Migration Conflict (Node.js ➔ Go 1.22)"):
+            # Ensure base Node.js claim exists
+            base_claim = MemoryClaim(
+                subject="backend_service",
+                predicate="framework",
+                object_value="Node.js 20",
+                source_quote="Our backend service runs on Node.js 20.",
+                status=ClaimStatus.ACTIVE.value,
+            )
+            service.save_claim(base_claim)
+
+            # Insert competing Go 1.22 claim as needs_review
+            candidate = MemoryClaim(
+                subject="backend_service",
+                predicate="framework",
+                object_value="Go 1.22",
+                source_quote="We decided to migrate the backend service from Node.js 20 to Go 1.22.",
+                status=ClaimStatus.NEEDS_REVIEW.value,
+                supersedes_id=base_claim.id,
+            )
+            service.save_claim(candidate)
+            st.success("Seeded demo conflict for review!")
+            st.rerun()
+
+    if not review_queue:
+        st.info("✅ No conflicts pending review. All stored active claims are consistent.")
+    else:
+        for idx, item in enumerate(review_queue):
+            pending = item["pending_claim"]
+            existing = item["existing_claim"]
+            decision = item["decision"]
+
+            st.markdown(f"""<div class='conflict-container'>
+                <h4>Conflict #{idx + 1}: Subject <code>{pending.subject}</code> • Predicate <code>{pending.predicate}</code></h4>
+            """, unsafe_allow_html=True)
+
+            c_ex, c_prop = st.columns(2)
+            with c_ex:
+                st.markdown("##### 📌 Existing Active Claim")
+                if existing:
+                    st.write(f"- **Current Value:** `{existing.object_value}`")
+                    st.write(f"- **Recorded Status:** <span class='status-badge-ok'>{existing.status.upper()}</span>", unsafe_allow_html=True)
+                    st.write(f"- **Valid From:** `{existing.valid_from or existing.created_at.strftime('%Y-%m-%d %H:%M')}`")
+                    st.markdown(f"<div class='quote-box'>\"{existing.source_quote or 'No quote recorded'}\"</div>", unsafe_allow_html=True)
+                else:
+                    st.write("*No prior active claim found on this subject/predicate.*")
+
+            with c_prop:
+                st.markdown("##### 🆕 Proposed Replacement Claim")
+                st.write(f"- **New Value:** `{pending.object_value}`")
+                st.write(f"- **Status:** <span class='status-badge-warn'>{pending.status.upper()}</span>", unsafe_allow_html=True)
+                st.write(f"- **Session ID:** `{pending.source_session_id or 'unknown'}`")
+                st.markdown(f"<div class='quote-box'>\"{pending.source_quote or 'No quote'}\"</div>", unsafe_allow_html=True)
+
+            # Decision analysis callout
+            badge_class = "status-badge-ok" if decision.is_explicit_update else "status-badge-warn"
+            st.markdown(
+                f"""
+                <div style='margin-top: 10px; padding: 10px; background: rgba(30, 41, 59, 0.4); border-radius: 6px;'>
+                    <b>Conflict Type:</b> <span class='{badge_class}'>{decision.conflict_type.upper()}</span><br>
+                    <b>Decision Reason:</b> {decision.decision_reason}<br>
+                    <b>Recommended Action:</b> <code>{decision.recommended_action}</code>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # Action buttons
+            col_act1, col_act2, col_act3 = st.columns([1, 1, 2])
+            with col_act1:
+                if existing:
+                    if st.button(f"✅ Approve Update", key=f"appr_{pending.id}"):
+                        service.approve_conflict_update(
+                            proposed_claim=pending,
+                            existing_claim_id=existing.id,
+                        )
+                        st.success(f"Approved! Old claim superseded, '{pending.object_value}' is now active.")
+                        st.rerun()
+                else:
+                    if st.button(f"✅ Activate Claim", key=f"act_{pending.id}"):
+                        service.db.update_claim_status(pending.id, ClaimStatus.ACTIVE.value, is_active=True)
+                        st.success("Claim activated!")
+                        st.rerun()
+
+            with col_act2:
+                if st.button(f"❌ Reject Update", key=f"rej_{pending.id}"):
+                    service.reject_conflict_update(
+                        proposed_claim_id=pending.id,
+                        reason="Rejected during user conflict review",
+                    )
+                    st.warning("Update rejected! Existing active claim preserved.")
+                    st.rerun()
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- Conflict Simulator Sandbox ---
+    st.write("---")
+    st.markdown("##### 🔬 Interactive Conflict Decision Sandbox")
+    st.caption("Test how RecallGuard compares any candidate assertion against your active database.")
+
+    with st.form("sandbox_conflict_form"):
+        sb_col1, sb_col2 = st.columns(2)
+        sb_subj = sb_col1.text_input("Subject", value="backend_service")
+        sb_pred = sb_col2.text_input("Predicate", value="framework")
+
+        sb_val = sb_col1.text_input("Proposed New Value", value="Go 1.22")
+        sb_quote = sb_col2.text_input(
+            "Verbatim Source Quote",
+            value="We decided to migrate our backend from Node.js to Go 1.22 starting next month.",
+        )
+
+        sim_submitted = st.form_submit_button("🔍 Evaluate Conflict Decision")
+
+    if sim_submitted:
+        temp_claim = MemoryClaim(
+            subject=sb_subj,
+            predicate=sb_pred,
+            object_value=sb_val,
+            source_quote=sb_quote,
+        )
+        sim_decision = service.resolve_conflicts(temp_claim)
+
+        st.markdown("###### 🎯 Firewall Evaluation Result:")
+        st.write(f"- **Conflict Classification:** `{sim_decision.conflict_type}`")
+        st.write(f"- **Explicit Update Detected:** `{'Yes' if sim_decision.is_explicit_update else 'No'}`")
+        st.write(f"- **Recommended Action:** `'{sim_decision.recommended_action}'`")
+        st.info(f"**Reason:** {sim_decision.decision_reason}")
+
+
+# ==============================================================================
+# TAB 2: Local AI Memory Extraction (Feature 02)
 # ==============================================================================
 with tab_extract:
     st.subheader("Extract Memory Claims with Local Qwen 3.5 (0.8B)")
@@ -234,13 +405,11 @@ with tab_extract:
         Input any conversation transcript below. RecallGuard uses **local Ollama** to decompose 
         unstructured dialogue into structured **(Subject, Predicate, Object)** atomic claims.
         
-        Every claim must pass the **Verbatim Source Quote Firewall**: if the model extracts an assertion 
-        whose supporting quote cannot be verified word-for-word in the transcript, the claim is 
-        **quarantined and rejected** to prevent memory hallucinations.
+        Every claim must pass the **Verbatim Source Quote Firewall** and undergoes **real-time conflict resolution** 
+        against the active database.
         """
     )
 
-    # Sample presets
     SAMPLE_CONVERSATIONS = {
         "Tech Stack Migration": (
             "User: Hi, we had a team architecture meeting today.\n"
@@ -270,7 +439,6 @@ with tab_extract:
             st.session_state["session_id_input"] = f"session-{label.lower().replace(' ', '-')}"
             st.rerun()
 
-    # Form for conversation input
     with st.form("extraction_form"):
         col_s1, col_s2 = st.columns([1.5, 1])
         session_id_val = st.session_state.get("session_id_input", "session-conversation-001")
@@ -300,13 +468,9 @@ with tab_extract:
         if not conv_text.strip():
             st.error("Please enter conversation text to extract claims from.")
         elif not ollama_ok:
-            st.error(
-                "Local Ollama daemon is offline. Please run `ollama serve` and ensure port 11434 is listening."
-            )
+            st.error("Local Ollama daemon is offline. Please run `ollama serve`.")
         elif not model_ok:
-            st.error(
-                f"Model `{service.llm.model}` is missing in Ollama. Please run `ollama pull {service.llm.model}`."
-            )
+            st.error(f"Model `{service.llm.model}` is missing in Ollama.")
         else:
             with st.spinner(f"Extracting atomic claims using local `{service.llm.model}`..."):
                 t_start = datetime.now()
@@ -322,7 +486,6 @@ with tab_extract:
                 claim.id: True for claim in extraction_result.valid_claims
             }
 
-    # Display extraction outcomes if available
     if "last_result" in st.session_state:
         res = st.session_state["last_result"]
         dur = st.session_state.get("last_duration", 0.0)
@@ -334,13 +497,12 @@ with tab_extract:
                 with st.expander("Show Raw Model Output"):
                     st.code(res.raw_model_output)
 
-        # Show Rejections / Firewall Quarantine
         if res.rejected_claims:
             st.markdown(
                 f"""
                 <div class='callout-box callout-danger'>
                     <h4>⚠️ Firewall Notice: {len(res.rejected_claims)} Candidate Claim(s) Quarantined / Rejected</h4>
-                    <p>The following assertions were generated by the model but <b>failed verbatim quote verification</b> or schema constraints.</p>
+                    <p>The following assertions failed verbatim quote verification or schema constraints.</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -350,7 +512,6 @@ with tab_extract:
                     st.markdown(f"**Rejection Reason:** `{rej.reason}`")
                     st.code(json.dumps(rej.claim_data, indent=2), language="json")
 
-        # Show Valid Claims for User Review
         if res.valid_claims:
             st.markdown(
                 f"#### ✅ Validated Claims ({len(res.valid_claims)}) — User Review & Approval "
@@ -358,12 +519,14 @@ with tab_extract:
                 unsafe_allow_html=True,
             )
             st.caption(
-                "Review the proposed claims below. Uncheck any claim you do not want to persist, then click 'Save Approved Claims'."
+                "Review candidate claims and their temporal conflict status before saving to SQLite."
             )
 
-            # Review checkboxes
             approved_map = st.session_state.get("review_approved", {})
             for c in res.valid_claims:
+                # Pre-evaluate conflict against current DB
+                conflict_dec = service.resolve_conflicts(c)
+
                 with st.container():
                     chk_val = approved_map.get(c.id, True)
                     col_chk, col_content = st.columns([0.15, 0.85])
@@ -372,21 +535,30 @@ with tab_extract:
                             "Approve",
                             value=chk_val,
                             key=f"chk_claim_{c.id}",
-                            label_visibility="visible",
                         )
                         approved_map[c.id] = is_checked
 
                     with col_content:
+                        badge_html = "<span class='status-badge-ok'>NEW CLAIM</span>"
+                        if conflict_dec.conflict_type == ConflictType.EXACT_DUPLICATE.value:
+                            badge_html = "<span class='status-badge-neutral'>EXACT DUPLICATE</span>"
+                        elif conflict_dec.conflict_type == ConflictType.EXPLICIT_UPDATE.value:
+                            badge_html = "<span class='status-badge-warn'>EXPLICIT UPDATE</span>"
+                        elif conflict_dec.conflict_type == ConflictType.AMBIGUOUS_CHANGE.value:
+                            badge_html = "<span class='status-badge-err'>AMBIGUOUS CONFLICT</span>"
+
                         st.markdown(
                             f"""
                             <div class='claim-card'>
                                 <b>Subject:</b> <code>{c.subject}</code> &nbsp;|&nbsp; 
                                 <b>Predicate:</b> <code>{c.predicate}</code> &nbsp;|&nbsp; 
                                 <b>Object:</b> <code>{c.object_value}</code> &nbsp;|&nbsp; 
-                                <b>Confidence:</b> <code>{c.confidence:.2f}</code> &nbsp;
-                                <span class='status-badge-ok'>VERBATIM GROUNDED</span>
+                                {badge_html}
                                 <div class='quote-box'>
                                     " {c.source_quote or 'N/A'} "
+                                </div>
+                                <div style='font-size:0.8rem; color:#94A3B8; margin-top:4px;'>
+                                    Conflict Analysis: {conflict_dec.decision_reason}
                                 </div>
                             </div>
                             """,
@@ -395,22 +567,31 @@ with tab_extract:
 
             st.session_state["review_approved"] = approved_map
 
-            # Save Approved Claims Button
             col_save1, col_save2 = st.columns([1, 1])
             with col_save1:
-                if st.button("💾 Save Approved Claims to SQLite Database", type="primary", use_container_width=True):
-                    claims_to_save = [
-                        c for c in res.valid_claims if approved_map.get(c.id, True)
-                    ]
-                    if claims_to_save:
-                        service.save_claims(claims_to_save)
-                        st.success(f"🎉 Successfully saved {len(claims_to_save)} claim(s) to SQLite memory store!")
-                        # Clear reviewed claims to avoid duplicate saves
-                        st.session_state.pop("last_result", None)
-                        st.session_state.pop("review_approved", None)
-                        st.rerun()
-                    else:
-                        st.warning("No claims selected for approval.")
+                if st.button("💾 Save Approved Claims with Conflict Resolution", type="primary", use_container_width=True):
+                    claims_to_save = [c for c in res.valid_claims if approved_map.get(c.id, True)]
+                    saved_count = 0
+                    superseded_count = 0
+                    staged_count = 0
+
+                    for c in claims_to_save:
+                        saved_claim, dec = service.process_and_stage_claim(c, auto_supersede_explicit=True)
+                        if dec.conflict_type == ConflictType.EXPLICIT_UPDATE.value:
+                            superseded_count += 1
+                        elif dec.conflict_type == ConflictType.AMBIGUOUS_CHANGE.value:
+                            staged_count += 1
+                        else:
+                            saved_count += 1
+
+                    msg = f"Processed {len(claims_to_save)} claims: {saved_count} new active, {superseded_count} explicit updates superseded"
+                    if staged_count > 0:
+                        msg += f", {staged_count} queued for conflict review in Tab 1"
+                    st.success(msg)
+
+                    st.session_state.pop("last_result", None)
+                    st.session_state.pop("review_approved", None)
+                    st.rerun()
 
             with col_save2:
                 if st.button("Discard Proposed Claims", use_container_width=True):
@@ -419,105 +600,79 @@ with tab_extract:
                     st.rerun()
 
         elif res.success and not res.rejected_claims:
-            st.info("ℹ️ No factual memory claims were detected in the conversation.")
-
-        # Expander for raw JSON
-        if res.raw_model_output:
-            with st.expander("🔍 Inspect Raw Model Output"):
-                st.code(res.raw_model_output, language="json")
+            st.info("ℹ️ No factual memory claims detected in the conversation.")
 
 
 # ==============================================================================
-# TAB 2: Claim Store & Schema Inspector
+# TAB 3: Claim Store & History Inspector
 # ==============================================================================
 with tab_store:
-    st.subheader("MemoryClaim Store & Database Inspector")
+    st.subheader("💾 Memory Claims & Audit History Inspector")
 
-    col_view, col_add = st.columns([1.3, 0.7])
+    filter_col, search_col = st.columns([1, 2])
+    with filter_col:
+        status_filter = st.selectbox(
+            "Filter by Lifecycle Status:",
+            ["All Claims", "active", "superseded", "needs_review"],
+        )
 
-    with col_view:
-        st.markdown("##### 📋 Stored Memory Claims in SQLite")
-        claims = service.list_claims(active_only=False)
+    claims_to_show = service.list_claims(
+        active_only=False,
+        status=None if status_filter == "All Claims" else status_filter,
+    )
 
-        if claims:
-            data = []
-            for c in claims:
-                data.append(
-                    {
-                        "ID": c.id[:8] + "...",
-                        "Subject": c.subject,
-                        "Predicate": c.predicate,
-                        "Object Value": c.object_value,
-                        "Source Quote": c.source_quote or "-",
-                        "Confidence": c.confidence,
-                        "Expired?": "⚠️ EXPIRED" if c.is_expired() else "✅ FRESH",
-                        "Active": "Yes" if c.is_active else "No",
-                        "Session": c.source_session_id or "-",
-                    }
-                )
-            df = pd.DataFrame(data)
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("No claims stored yet in the database. Extract claims from the first tab or import demo cases.")
-
-    with col_add:
-        st.markdown("##### ➕ Manually Insert a Test Claim")
-        with st.form("new_claim_form"):
-            subject = st.text_input("Subject", placeholder="e.g. backend_framework")
-            predicate = st.text_input("Predicate", placeholder="e.g. language_version")
-            object_val = st.text_input("Object Value", placeholder="e.g. Go 1.22")
-            source_quote_input = st.text_input("Source Quote", placeholder="Exact quote from user")
-            confidence = st.slider("Confidence", min_value=0.0, max_value=1.0, value=0.95, step=0.05)
-            session_id_man = st.text_input("Source Session ID", value="manual-test-session")
-            is_active = st.checkbox("Is Active", value=True)
-
-            submitted = st.form_submit_button("Persist Claim to SQLite")
-            if submitted:
-                if not subject.strip() or not predicate.strip() or not object_val.strip():
-                    st.error("Subject, Predicate, and Object Value are required.")
-                else:
-                    new_claim = MemoryClaim(
-                        subject=subject,
-                        predicate=predicate,
-                        object_value=object_val,
-                        source_quote=source_quote_input.strip() or None,
-                        confidence=confidence,
-                        source_session_id=session_id_man,
-                        is_active=is_active,
-                    )
-                    service.save_claim(new_claim)
-                    st.success(f"Claim persisted successfully! ID: {new_claim.id[:8]}...")
-                    st.rerun()
+    if claims_to_show:
+        data = []
+        for c in claims_to_show:
+            data.append(
+                {
+                    "ID": c.id[:8] + "...",
+                    "Subject": c.subject,
+                    "Predicate": c.predicate,
+                    "Object Value": c.object_value,
+                    "Status": c.status.upper(),
+                    "Source Quote": c.source_quote or "-",
+                    "Superseded By": (c.superseded_by[:8] + "...") if c.superseded_by else "-",
+                    "Supersedes ID": (c.supersedes_id[:8] + "...") if c.supersedes_id else "-",
+                    "Valid Until": c.valid_until.isoformat() if c.valid_until else "Active/Indefinite",
+                }
+            )
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No claims matching the selected filter.")
 
     st.write("---")
-    st.markdown("##### 📐 Evolved Pydantic Schema Definition (`core/schemas.py`)")
-    st.code(
-        """class MemoryClaim(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    subject: str = Field(..., min_length=1)
-    predicate: str = Field(..., min_length=1)
-    object_value: str = Field(..., min_length=1)
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    source_quote: Optional[str] = Field(default=None, description="Verbatim quote from conversation")
-    source_session_id: Optional[str] = None
-    valid_from: Optional[datetime] = None
-    valid_until: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    is_active: bool = True
-    metadata: Dict[str, Any] = Field(default_factory=dict)""",
-        language="python",
-    )
+    st.markdown("##### ➕ Manually Insert a Test Claim")
+    with st.form("manual_insert_form"):
+        col_m1, col_m2 = st.columns(2)
+        subj_m = col_m1.text_input("Subject", placeholder="e.g. backend_framework")
+        pred_m = col_m2.text_input("Predicate", placeholder="e.g. language_version")
+        val_m = col_m1.text_input("Object Value", placeholder="e.g. Go 1.22")
+        quote_m = col_m2.text_input("Source Quote", placeholder="Verbatim quote from user transcript")
+
+        submitted = st.form_submit_button("Persist Claim to SQLite")
+        if submitted:
+            if not subj_m.strip() or not pred_m.strip() or not val_m.strip():
+                st.error("Subject, Predicate, and Object Value are required.")
+            else:
+                new_claim = MemoryClaim(
+                    subject=subj_m,
+                    predicate=pred_m,
+                    object_value=val_m,
+                    source_quote=quote_m.strip() or None,
+                    status=ClaimStatus.ACTIVE.value,
+                )
+                service.save_claim(new_claim)
+                st.success("Claim persisted successfully!")
+                st.rerun()
 
 
 # ==============================================================================
-# TAB 3: Failure Scenarios (Demo Cases)
+# TAB 4: Failure Scenarios (Demo Cases)
 # ==============================================================================
 with tab_cases:
     st.subheader("Curated Failure Scenarios")
-    st.write(
-        "Inspect these concrete failure cases from `data/demo_cases.json` to see how unmanaged agent memory causes bugs."
-    )
-
     demo_file = Path("data/demo_cases.json")
     if demo_file.exists():
         with open(demo_file, "r") as f:
@@ -568,23 +723,12 @@ with tab_cases:
             st.success(f"Successfully imported {imported} claims into SQLite store!")
             st.rerun()
 
-    else:
-        st.warning("Demo cases file `data/demo_cases.json` not found.")
-
 
 # ==============================================================================
-# TAB 4: The Memory Problem Explained
+# TAB 5: The Memory Problem Explained
 # ==============================================================================
 with tab_problem:
     st.subheader("Why Autonomous Agents Fail: The Memory Decay Crisis")
-
-    st.write(
-        """
-        When developers give agents persistent memory (vector databases, document dumps, or naive key-value stores), 
-        they inadvertently create two catastrophic reliability failure modes:
-        """
-    )
-
     col_p1, col_p2 = st.columns(2)
 
     with col_p1:
@@ -592,14 +736,13 @@ with tab_problem:
             """
             <div class='callout-box callout-warning'>
                 <h3>1. Stale Memory (Temporal Obsolescence)</h3>
-                <p><b>What happens:</b> An agent records a fact that was true at timestamp <i>T<sub>0</sub></i>, but expires or changes at <i>T<sub>1</sub></i>.</p>
+                <p><b>What happens:</b> An agent records a fact true at <i>T<sub>0</sub></i>, but invalidated at <i>T<sub>1</sub></i>.</p>
                 <p><b>Example:</b></p>
                 <ul>
-                    <li><i>T<sub>0</sub> (Jan 2024):</i> "We use Python 3.9 for our microservices."</li>
-                    <li><i>T<sub>1</sub> (Oct 2024):</i> Python 3.9 reaches End of Life; production upgrades to Python 3.12.</li>
-                    <li><i>T<sub>2</sub> (Nov 2024):</i> When asked to generate a Dockerfile, the agent blindly queries its memory and outputs Python 3.9, introducing security flaws and build failures.</li>
+                    <li><i>T<sub>0</sub>:</i> "We use Python 3.9 for our microservices."</li>
+                    <li><i>T<sub>1</sub>:</i> Production upgrades to Python 3.12.</li>
+                    <li><i>T<sub>2</sub>:</i> Agent still generates Python 3.9 code from unpruned memory.</li>
                 </ul>
-                <p><b>Root Cause:</b> Traditional memory systems perform semantic similarity search without temporal validity boundaries. A stale memory with high semantic similarity will outrank or pollute the prompt.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -610,78 +753,23 @@ with tab_problem:
             """
             <div class='callout-box callout-danger'>
                 <h3>2. Contradictory Memory (Logical Inconsistency)</h3>
-                <p><b>What happens:</b> Multi-turn or multi-session interactions record opposing claims about the same subject and predicate.</p>
+                <p><b>What happens:</b> Multi-turn or multi-session interactions record opposing claims.</p>
                 <p><b>Example:</b></p>
                 <ul>
-                    <li><i>Session 1:</i> "User prefers strict TypeScript with functional programming style."</li>
-                    <li><i>Session 4:</i> "User switched project codebase to Go with standard OOP."</li>
-                    <li><i>Session 7:</i> The agent receives both memories in context and produces a Frankenstein hybrid or unpredictably alternates between styles across prompts.</li>
+                    <li><i>Session 1:</i> "User prefers strict TypeScript."</li>
+                    <li><i>Session 4:</i> "User migrated project to Go."</li>
+                    <li><i>Session 7:</i> Agent arbitrarily alternates between Go and TypeScript across prompts.</li>
                 </ul>
-                <p><b>Root Cause:</b> Lack of temporal resolution and claim-level contradiction graph. The agent treats all historical assertions as concurrently valid.</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    st.markdown("### The RecallGuard Solution: Temporal Memory Firewall")
-    st.write(
-        """
-        RecallGuard breaks raw text memories into atomic **(Subject, Predicate, Object)** claims tagged with:
-        - **Verbatim Grounding Quote:** Verified source quote preventing hallucinated extraction.
-        - **Temporal Bounds:** `valid_from`, `valid_until`
-        - **Reliability Attributes:** `confidence`, `source_session_id`, `is_active`
-        
-        Before any memory enters the agent's prompt window, RecallGuard audits the candidate set against current query time,
-        quarantines superseded records, and alerts on unresolved logical conflicts.
-        """
-    )
-
 
 # ==============================================================================
-# TAB 5: Foundation Overview
+# TAB 6: Foundation Overview
 # ==============================================================================
 with tab_overview:
-    st.subheader("Welcome to RecallGuard")
-    st.write(
-        """
-        **RecallGuard** acts as an intermediary **Temporal Memory Reliability Firewall** between 
-        long-term episodic storage and an autonomous AI agent's inference context.
-        """
-    )
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown(
-            """
-            <div class='metric-card'>
-                <h4>🕒 Temporal Validity</h4>
-                <p>Every stored claim tracks <code>valid_from</code> and <code>valid_until</code> timestamps. Expired instructions are quarantined before prompt construction.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with col2:
-        st.markdown(
-            """
-            <div class='metric-card'>
-                <h4>⚔️ Contradiction Firewall</h4>
-                <p>Detects logical incompatibilities across sessions (e.g., conflicting tech stacks or shifted deadlines) to prevent chaotic hallucinations.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with col3:
-        st.markdown(
-            """
-            <div class='metric-card'>
-                <h4>🔒 Local-First Privacy</h4>
-                <p>Runs 100% locally on your machine via <b>Ollama (qwen3.5:0.8b)</b> and <b>SQLite</b>. Zero external cloud API calls or credential leaks.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.write("---")
     st.subheader("System Infrastructure Status")
     status_col1, status_col2 = st.columns(2)
 
@@ -697,4 +785,4 @@ with tab_overview:
         st.write(f"- **Type:** SQLite 3 (ACID compliant, zero server daemon)")
         st.write(f"- **File Location:** `{Path(DEFAULT_DB_PATH).resolve()}`")
         st.write(f"- **Recorded Claims:** {stats['total']} ({stats['active']} active)")
-        st.write("- **Schema Version:** 1 (Tables: `memory_claims`, `schema_version`)")
+        st.write(f"- **Audit History:** {stats.get('superseded', 0)} superseded, {stats.get('needs_review', 0)} in review")

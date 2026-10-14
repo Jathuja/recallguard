@@ -6,7 +6,12 @@ Cloud APIs (OpenAI, Gemini, Anthropic, etc.) are strictly prohibited.
 
 import os
 from typing import Any, Dict, List, Optional
-import ollama
+try:
+    import ollama
+    HAS_OLLAMA_PKG = True
+except ImportError:
+    ollama = None
+    HAS_OLLAMA_PKG = False
 
 from core.schemas import OllamaConfig
 
@@ -26,7 +31,11 @@ class OllamaClient:
         self.model = model or os.getenv("OLLAMA_MODEL", DEFAULT_MODEL)
         self.host = host or os.getenv("OLLAMA_HOST", DEFAULT_HOST)
         self.timeout = timeout
-        self._client = ollama.Client(host=self.host, timeout=self.timeout)
+        if HAS_OLLAMA_PKG and ollama is not None:
+            self._client = ollama.Client(host=self.host, timeout=self.timeout)
+        else:
+            self._client = None
+
 
     @property
     def config(self) -> OllamaConfig:
@@ -39,6 +48,8 @@ class OllamaClient:
 
     def check_connection(self) -> bool:
         """Verify that the local Ollama daemon is reachable."""
+        if self._client is None:
+            return False
         try:
             self._client.list()
             return True
@@ -47,6 +58,8 @@ class OllamaClient:
 
     def list_models(self) -> List[str]:
         """Return a list of locally available model names."""
+        if self._client is None:
+            return []
         try:
             response = self._client.list()
             models = []
@@ -78,18 +91,13 @@ class OllamaClient:
         think: bool = False,
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Execute a structured chat completion using local Ollama.
-        
-        Args:
-            prompt: User message content.
-            system_prompt: System instruction prompt.
-            format_type: Format constraint (default 'json').
-            think: Whether to allow reasoning thinking tokens (default False for fast direct JSON).
-            options: Additional inference options like temperature or num_predict.
-            
-        Returns:
-            Extracted text response from the model.
-        """
+        """Execute a structured chat completion using local Ollama."""
+        if self._client is None:
+            raise RuntimeError(
+                "The 'ollama' Python package is not installed in the currently active Python environment. "
+                "Please activate the project virtual environment ('source .venv/bin/activate') or launch using '.venv/bin/streamlit run app.py'."
+            )
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})

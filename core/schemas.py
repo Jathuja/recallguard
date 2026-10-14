@@ -1,16 +1,34 @@
 """Core data models and schemas for RecallGuard."""
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Dict, List, Optional
 import uuid
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class ClaimStatus(str, Enum):
+    """Logical lifecycle states of a memory claim."""
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    NEEDS_REVIEW = "needs_review"
+
+
+class ConflictType(str, Enum):
+    """Categorization of memory conflict scenarios."""
+    NO_CONFLICT = "no_conflict"
+    EXACT_DUPLICATE = "exact_duplicate"
+    EXPLICIT_UPDATE = "explicit_update"
+    AMBIGUOUS_CHANGE = "ambiguous_change"
+    INVALID_EVIDENCE = "invalid_evidence"
 
 
 class MemoryClaim(BaseModel):
     """Represents an atomic memory claim with temporal validity and reliability attributes.
     
     A claim expresses a subject-predicate-object assertion extracted from agent
-    interactions, tagged with temporal bounds, source verification quotes, and confidence ratings.
+    interactions, tagged with temporal bounds, source verification quotes, logical lifecycle
+    status, and confidence ratings.
     """
 
     id: str = Field(
@@ -58,9 +76,21 @@ class MemoryClaim(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="Timestamp when the claim record was created in the system.",
     )
+    status: str = Field(
+        default=ClaimStatus.ACTIVE.value,
+        description="Logical lifecycle status: 'active', 'superseded', or 'needs_review'.",
+    )
     is_active: bool = Field(
         default=True,
         description="Whether this claim is currently active and eligible for retrieval.",
+    )
+    superseded_by: Optional[str] = Field(
+        default=None,
+        description="UUID of newer claim that superseded this claim.",
+    )
+    supersedes_id: Optional[str] = Field(
+        default=None,
+        description="UUID of older claim that this claim superseded.",
     )
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
@@ -74,6 +104,30 @@ class MemoryClaim(BaseModel):
             return v.strip()
         return v
 
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: Any) -> str:
+        valid_statuses = {s.value for s in ClaimStatus}
+        if isinstance(v, str) and v.lower() in valid_statuses:
+            return v.lower()
+        raise ValueError(f"Status must be one of {valid_statuses}")
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_status_and_is_active(cls, data: Any) -> Any:
+        """Synchronize status and is_active for backward compatibility."""
+        if isinstance(data, dict):
+            # If is_active is explicitly False and status not specified, mark superseded
+            if data.get("is_active") is False and "status" not in data:
+                data["status"] = ClaimStatus.SUPERSEDED.value
+            elif data.get("status") in (ClaimStatus.SUPERSEDED.value, ClaimStatus.NEEDS_REVIEW.value) and "is_active" not in data:
+                data["is_active"] = False
+            elif data.get("status") == ClaimStatus.ACTIVE.value and "is_active" not in data:
+                data["is_active"] = True
+            elif data.get("is_active") is False and data.get("status") == ClaimStatus.ACTIVE.value:
+                data["status"] = ClaimStatus.SUPERSEDED.value
+        return data
+
     def is_expired(self, as_of: Optional[datetime] = None) -> bool:
         """Check if this claim is expired as of a given timestamp."""
         check_time = as_of or datetime.now(timezone.utc)
@@ -84,6 +138,23 @@ class MemoryClaim(BaseModel):
                 check_time = check_time.astimezone(timezone.utc).replace(tzinfo=None)
             return check_time > self.valid_until
         return False
+
+
+class ConflictResolutionDecision(BaseModel):
+    """Outcome and explanation of comparing a proposed claim against existing memories."""
+
+    proposed_claim: MemoryClaim
+    existing_claim: Optional[MemoryClaim] = None
+    conflict_type: str = ConflictType.NO_CONFLICT.value
+    recommended_action: str = Field(
+        ...,
+        description="'add_new', 'keep_existing', 'supersede_existing', 'needs_review', or 'reject'."
+    )
+    decision_reason: str
+    is_explicit_update: bool = False
+    evidence_quote: Optional[str] = None
+    transition_detected: Optional[str] = None
+    confidence_score: float = 1.0
 
 
 class RawExtractedClaim(BaseModel):

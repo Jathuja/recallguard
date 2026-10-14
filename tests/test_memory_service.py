@@ -87,16 +87,11 @@ def test_claim_expiration_logic():
 
 
 def test_future_milestones_stubs_raise_not_implemented(service):
-    """Verify that conflict resolution and retrieval remain guarded for later features."""
-    claim = MemoryClaim(subject="test", predicate="test", object_value="test")
-
-    with pytest.raises(NotImplementedError) as exc_info2:
-        service.resolve_conflicts(claim)
-    assert "Feature 03" in str(exc_info2.value)
-
+    """Verify that retrieval remains guarded for Feature 04."""
     with pytest.raises(NotImplementedError) as exc_info3:
         service.retrieve_reliable_memories("current language")
     assert "Feature 04" in str(exc_info3.value)
+
 
 
 def test_ollama_client_configuration():

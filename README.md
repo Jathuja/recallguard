@@ -96,7 +96,14 @@ pytest -v
   - Verbatim source quote preservation and validation firewall
   - Malformed and ungrounded claim quarantine
   - Interactive user review & selective SQLite persistence
-- [ ] **Feature 03:** Temporal Conflict & Contradiction Resolution
+- [x] **Feature 03: Temporal Memory Conflict Resolution**
+  - Deterministic comparison against existing active claims
+  - Detection of exact duplicates, explicit updates, and ambiguous conflicts
+  - Evidence-based transition detection via verified source quotes
+  - Logical lifecycle states: `active`, `superseded`, and `needs_review`
+  - Atomic database supersession preserving full historical audit trails
+  - Interactive Conflict Review Queue and Decision Sandbox in Streamlit
 - [ ] **Feature 04:** Temporal Memory Retrieval Engine
 - [ ] **Feature 05:** Reliability Evaluation & Firewall Filtering
+
 

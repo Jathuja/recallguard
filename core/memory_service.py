@@ -1,14 +1,18 @@
-"""Memory Service for managing claims, storage, and foundational lifecycle operations."""
+"""Memory Service for managing claims, storage, extraction, and conflict resolution."""
 
 from datetime import datetime, timezone
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pydantic import ValidationError
 
+from core.conflict_detector import evaluate_claim_conflict
 from core.database import DatabaseManager, DEFAULT_DB_PATH
 from core.llm import OllamaClient
 from core.schemas import (
+    ClaimStatus,
+    ConflictResolutionDecision,
+    ConflictType,
     ExtractionResponse,
     ExtractionResult,
     ExtractionValidationIssue,
@@ -48,11 +52,7 @@ Output:
 
 
 class MemoryService:
-    """Service coordinating memory claims persistence, AI extraction, and verification.
-    
-    Milestone 02 implements local AI claim extraction, Pydantic validation,
-    and verbatim source quote verification.
-    """
+    """Service coordinating memory claims persistence, AI extraction, and conflict resolution."""
 
     def __init__(
         self,
@@ -81,13 +81,16 @@ class MemoryService:
         """Fetch a single claim by identifier."""
         return self.db.get_claim(claim_id)
 
-    def list_claims(self, active_only: bool = False) -> List[MemoryClaim]:
-        """Retrieve stored memory claims."""
-        return self.db.list_claims(active_only=active_only)
+    def list_claims(
+        self, active_only: bool = False, status: Optional[str] = None
+    ) -> List[MemoryClaim]:
+        """Retrieve stored memory claims with optional status filtering."""
+        return self.db.list_claims(active_only=active_only, status=status)
 
     def get_stats(self) -> dict:
-        """Return memory store statistics."""
-        return self.db.count_claims()
+        """Return memory store statistics including status breakdown."""
+        return self.db.count_claims_detailed()
+
 
     # --- Feature 02: AI Memory Extraction & Verification ---
 
@@ -96,7 +99,6 @@ class MemoryService:
         """Verify that the source quote actually appears verbatim in the input text."""
         if not source_quote or not source_quote.strip():
             return False
-        # Normalize whitespace and compare case-insensitively
         norm_quote = " ".join(source_quote.strip().split()).lower()
         norm_text = " ".join(text.split()).lower()
         return norm_quote in norm_text
@@ -105,11 +107,9 @@ class MemoryService:
     def _extract_json_block(raw_text: str) -> str:
         """Extract JSON string from potential markdown code fences or raw text."""
         cleaned = raw_text.strip()
-        # Look for ```json ... ``` blocks
         json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
         if json_match:
             return json_match.group(1).strip()
-        # Look for outermost { ... } or [ ... ]
         first_brace = cleaned.find("{")
         last_brace = cleaned.rfind("}")
         if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
@@ -132,7 +132,6 @@ class MemoryService:
                 success=True,
             )
 
-        # 1. Call local Ollama inference
         try:
             raw_output = self.llm.chat_structured(
                 prompt=f"Extract memory claims from this conversation:\n\n{text}",
@@ -158,7 +157,6 @@ class MemoryService:
                 error_message="Ollama returned an empty response.",
             )
 
-        # 2. Parse JSON
         json_str = self._extract_json_block(raw_output)
         try:
             parsed_data = json.loads(json_str)
@@ -176,7 +174,6 @@ class MemoryService:
                 error_message=f"JSON decoding error: {str(json_err)}",
             )
 
-        # 3. Handle structure (either {"claims": [...]} or raw list [...])
         raw_items: List[Any] = []
         if isinstance(parsed_data, dict):
             raw_items = parsed_data.get("claims", [])
@@ -199,7 +196,6 @@ class MemoryService:
         valid_claims: List[MemoryClaim] = []
         rejected_claims: List[ExtractionValidationIssue] = []
 
-        # 4. Validate each item with Pydantic and verify source quote
         for item in raw_items:
             if not isinstance(item, dict):
                 rejected_claims.append(
@@ -221,7 +217,6 @@ class MemoryService:
                 )
                 continue
 
-            # Verify that source_quote actually appears in the input conversation
             if not self.verify_quote_in_text(candidate.source_quote, text):
                 rejected_claims.append(
                     ExtractionValidationIssue(
@@ -231,7 +226,6 @@ class MemoryService:
                 )
                 continue
 
-            # Create validated MemoryClaim
             claim = MemoryClaim(
                 subject=candidate.subject,
                 predicate=candidate.predicate,
@@ -241,6 +235,8 @@ class MemoryService:
                 source_session_id=session_id,
                 valid_from=candidate.valid_from,
                 valid_until=candidate.valid_until,
+                status=ClaimStatus.ACTIVE.value,
+                is_active=True,
                 metadata={
                     "source_quote": candidate.source_quote,
                     "extracted_at": datetime.now(timezone.utc).isoformat(),
@@ -255,13 +251,135 @@ class MemoryService:
             success=True,
         )
 
-    # --- Foundation Stubs for Upcoming Milestones ---
+    # --- Feature 03: Temporal Memory Conflict Resolution ---
 
-    def resolve_conflicts(self, new_claim: MemoryClaim) -> List[MemoryClaim]:
-        """Stub: Temporal conflict resolution will be implemented in Feature 03."""
-        raise NotImplementedError(
-            "Conflict resolution logic is scheduled for implementation in Feature 03."
+    def resolve_conflicts(
+        self,
+        new_claim: MemoryClaim,
+        conversation_context: Optional[str] = None,
+    ) -> ConflictResolutionDecision:
+        """Compare a proposed memory claim against existing active records.
+        
+        Uses deterministic business rules and quote evidence to classify:
+        - Exact duplicate
+        - Conflicting value with explicit update evidence
+        - Ambiguous conflict without update evidence
+        - Invalid evidence
+        - No conflict
+        """
+        # Look for existing active claims matching the subject and predicate
+        matching_actives = self.db.find_matching_claims(
+            subject=new_claim.subject,
+            predicate=new_claim.predicate,
+            active_only=True,
         )
+
+        return evaluate_claim_conflict(
+            proposed_claim=new_claim,
+            existing_claims=matching_actives,
+            conversation_context=conversation_context,
+        )
+
+    def process_and_stage_claim(
+        self,
+        proposed_claim: MemoryClaim,
+        auto_supersede_explicit: bool = False,
+    ) -> Tuple[MemoryClaim, ConflictResolutionDecision]:
+        """Evaluate conflict and stage or persist claim according to rules.
+        
+        - If NO_CONFLICT: saved as active.
+        - If EXACT_DUPLICATE: returns existing active claim without duplicate entry.
+        - If EXPLICIT_UPDATE:
+            - If auto_supersede_explicit=True: atomically supersedes old claim.
+            - Else: saved as 'needs_review' with supersedes_id link.
+        - If AMBIGUOUS_CHANGE or INVALID_EVIDENCE:
+            - Saved as 'needs_review'.
+        """
+        decision = self.resolve_conflicts(proposed_claim)
+
+        if decision.conflict_type == ConflictType.EXACT_DUPLICATE.value and decision.existing_claim:
+            return decision.existing_claim, decision
+
+        if decision.conflict_type == ConflictType.NO_CONFLICT.value:
+            proposed_claim.status = ClaimStatus.ACTIVE.value
+            proposed_claim.is_active = True
+            saved = self.save_claim(proposed_claim)
+            return saved, decision
+
+        if decision.conflict_type == ConflictType.EXPLICIT_UPDATE.value and decision.existing_claim:
+            if auto_supersede_explicit:
+                superseded_claim = self.approve_conflict_update(
+                    proposed_claim=proposed_claim,
+                    existing_claim_id=decision.existing_claim.id,
+                )
+                return superseded_claim, decision
+            else:
+                # Stage as needs_review for explicit user approval
+                proposed_claim.status = ClaimStatus.NEEDS_REVIEW.value
+                proposed_claim.is_active = False
+                proposed_claim.supersedes_id = decision.existing_claim.id
+                proposed_claim.metadata["conflict_reason"] = decision.decision_reason
+                proposed_claim.metadata["conflict_type"] = decision.conflict_type
+                saved = self.save_claim(proposed_claim)
+                return saved, decision
+
+        # For AMBIGUOUS_CHANGE or INVALID_EVIDENCE
+        proposed_claim.status = ClaimStatus.NEEDS_REVIEW.value
+        proposed_claim.is_active = False
+        if decision.existing_claim:
+            proposed_claim.supersedes_id = decision.existing_claim.id
+        proposed_claim.metadata["conflict_reason"] = decision.decision_reason
+        proposed_claim.metadata["conflict_type"] = decision.conflict_type
+        saved = self.save_claim(proposed_claim)
+        return saved, decision
+
+    def approve_conflict_update(
+        self, proposed_claim: MemoryClaim, existing_claim_id: str
+    ) -> MemoryClaim:
+        """Approve an update: atomically supersede the old record and activate the replacement."""
+        return self.db.supersede_claim_atomic(
+            old_claim_id=existing_claim_id,
+            new_claim=proposed_claim,
+        )
+
+    def reject_conflict_update(
+        self, proposed_claim_id: str, reason: str = "Rejected during conflict review"
+    ) -> bool:
+        """Reject an update: mark the proposed claim as superseded/rejected without touching existing active claim."""
+        return self.db.update_claim_status(
+            claim_id=proposed_claim_id,
+            status=ClaimStatus.SUPERSEDED.value,
+            is_active=False,
+            reason=reason,
+        )
+
+    def list_review_queue(self) -> List[Dict[str, Any]]:
+        """Return list of claims pending review with their corresponding existing active claims."""
+        pending_claims = self.list_claims(status=ClaimStatus.NEEDS_REVIEW.value)
+        queue = []
+        for pending in pending_claims:
+            existing: Optional[MemoryClaim] = None
+            if pending.supersedes_id:
+                existing = self.get_claim(pending.supersedes_id)
+            if not existing:
+                # Search by subject and predicate
+                matches = self.db.find_matching_claims(
+                    subject=pending.subject, predicate=pending.predicate, active_only=True
+                )
+                if matches:
+                    existing = matches[0]
+
+            decision = evaluate_claim_conflict(pending, [existing] if existing else [])
+            queue.append(
+                {
+                    "pending_claim": pending,
+                    "existing_claim": existing,
+                    "decision": decision,
+                }
+            )
+        return queue
+
+    # --- Foundation Stubs for Upcoming Milestones ---
 
     def retrieve_reliable_memories(self, query: str) -> List[MemoryClaim]:
         """Stub: Temporal reliability retrieval will be implemented in Feature 04."""
