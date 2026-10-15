@@ -66,12 +66,12 @@ class DatabaseManager:
         """Provide a transactional SQLite connection."""
         if self._is_memory:
             if self._memory_conn is None:
-                self._memory_conn = sqlite3.connect(":memory:")
+                self._memory_conn = sqlite3.connect(":memory:", check_same_thread=False)
                 self._memory_conn.row_factory = sqlite3.Row
             yield self._memory_conn
             return
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
